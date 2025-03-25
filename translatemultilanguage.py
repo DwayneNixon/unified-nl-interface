@@ -258,18 +258,6 @@ class MultilingualTranslatorInterface:
         )
         
         st.title("🚀 Multilingual Natural Language Interface")
-        
-        # Sidebar for configuration and metadata
-        # with st.sidebar:
-        #     st.header("🔧 System Configuration")
-        #     st.json({
-        #         "Model": interpreter.llm.model,
-        #         "API Base": interpreter.llm.api_base,
-        #         "Offline Mode": interpreter.offline
-        #     })
-            
-        #     st.divider()
-        #     st.metric("Total Errors", st.session_state.error_count)
 
         # Language Selection
         col_lang, col_input = st.columns([1, 3])
@@ -304,8 +292,17 @@ class MultilingualTranslatorInterface:
             if message.strip():
                 try:
                     with st.spinner("Processing your request..."):
-                        # Attempt to process in target language
-                        response_stream = interpreter.chat(message, stream=True)
+                        # Translate the input to English
+                        translation_result = self.translate_text(message)
+                        translated_message = translation_result['translated_text']
+                        original_language = translation_result['original_language']
+
+                        # Display translation information
+                        st.info(f"Original Language: {original_language}")
+                        st.info(f"Translated Message: {translated_message}")
+
+                        # Process translated message with interpreter
+                        response_stream = interpreter.chat(translated_message, stream=True)
                         
                         grouped_chunks = {
                             "code": [],
@@ -326,7 +323,9 @@ class MultilingualTranslatorInterface:
                         # Optional: Update chat history
                         st.session_state.chat_history.append({
                             "user": message,
+                            "translated_user": translated_message,
                             "language": selected_language,
+                            "original_language": original_language,
                             "response": grouped_chunks
                         })
                 

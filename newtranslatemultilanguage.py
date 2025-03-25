@@ -1,47 +1,106 @@
 import streamlit as st
 import speech_recognition as sr
-from interpreter import interpreter
 import logging
 from typing import Dict, List
+from interpreter import interpreter
+import sys
+import traceback
 
-class MultilingualNLInterface:
+# Flexible translator import with error handling
+def get_translator():
+    """
+    Attempt to import Translator with multiple fallback strategies
+    """
+    import_attempts = [
+        # Try standard googletrans import
+        lambda: __import__('googletrans').Translator(),
+        
+        # Try deep translator as alternative
+        lambda: __import__('deep_translator').GoogleTranslator(),
+        
+        # Try custom translation wrapper
+        lambda: type('FallbackTranslator', (), {
+            'translate': lambda self, text, dest='en': type('TranslationResult', (), {
+                'text': text,
+                'src': 'auto'
+            })()
+        })()
+    ]
+
+    last_error = None
+    for attempt in import_attempts:
+        try:
+            return attempt()
+        except (ImportError, Exception) as e:
+            last_error = e
+            continue
+    
+    # If all attempts fail, raise the last error
+    raise ImportError(f"Could not import a translation library. Last error: {last_error}")
+
+class MultilingualTranslatorInterface:
     def __init__(self):
         """
-        Initialize the Multilingual Natural Language Interface application.
+        Initialize the Multilingual Translation Natural Language Interface.
         """
         # Configure logging
         logging.basicConfig(level=logging.INFO, 
                             format='%(asctime)s - %(levelname)s: %(message)s')
         self.logger = logging.getLogger(__name__)
 
-        # Configure language mappings
-        self.language_codes = {
-            "English": "en-US",
-            "Hindi": "hi-IN",
-            # "Marathi": "mr-IN",
-            # "Bengali": "bn-IN", 
-            # "Tamil": "ta-IN",
-            # "Telugu": "te-IN",
-            # "Kannada": "kn-IN",
-            # "Malayalam": "ml-IN",
-            # "Gujarati": "gu-IN",
-            # "Punjabi": "pa-IN"
-        }
+        # Initialize flexible translator
+        try:
+            self.translator = get_translator()
+            self.logger.info("Translation library successfully imported")
+        except Exception as e:
+            self.logger.error(f"Translator initialization failed: {e}")
+            st.error(f"Translation service initialization error: {e}")
+            self.translator = None
 
         # Configure Open Interpreter
         self._configure_interpreter()
-        
+
+        # Configure language mappings
+        self.language_codes = {
+            "English": "en",
+            "Hindi": "hi",
+            "Marathi": "mr",
+            "Bengali": "bn", 
+            "Tamil": "ta",
+            "Telugu": "te",
+            "Kannada": "kn",
+            "Malayalam": "ml",
+            "Gujarati": "gu",
+            "Punjabi": "pa",
+            "Spanish": "es",
+            "French": "fr",
+            "German": "de",
+            "Arabic": "ar",
+            "Chinese": "zh-cn"
+        }
+
+        # Reverse mapping for display
+        self.language_names = {v: k for k, v in self.language_codes.items()}
+
         # Initialize session state
         self._initialize_session_state()
 
     def _configure_interpreter(self):
         """
-        Configure the Open Interpreter settings.
+        Configure the Open Interpreter settings with extensive error handling.
         """
         try:
+            # Reset interpreter to default settings
+            interpreter.reset()
+            
+            # Configure specific settings with error checking
             interpreter.offline = True  # Disable online features
             interpreter.llm.model = "ollama/llama3.1"  # Use specified model
             interpreter.llm.api_base = "http://localhost:11434"  # Set API endpoint
+            
+            # Verbose mode for debugging
+            interpreter.verbose = True
+            
             self.logger.info("Open Interpreter configured successfully")
         except Exception as e:
             self.logger.error(f"Interpreter configuration error: {e}")
@@ -53,13 +112,15 @@ class MultilingualNLInterface:
         """
         session_vars = [
             "voice_message", 
+            "translated_message",
+            "original_language",
             "chat_history", 
             "error_count",
             "selected_language"
         ]
         for var in session_vars:
             if var not in st.session_state:
-                if var == "voice_message":
+                if var in ["voice_message", "translated_message", "original_language"]:
                     st.session_state[var] = ""
                 elif var == "chat_history":
                     st.session_state[var] = []
@@ -68,6 +129,63 @@ class MultilingualNLInterface:
                 elif var == "selected_language":
                     st.session_state[var] = "English"
 
+    def translate_text(self, text: str, target_lang: str = 'en') -> Dict[str, str]:
+        """
+        Translate text to English and detect original language.
+        
+        Args:
+            text (str): Text to translate
+            target_lang (str): Target language code (default: English)
+        
+        Returns:
+            Dict containing original and translated text
+        """
+        if not self.translator:
+            st.warning("Translation service is unavailable")
+            return {
+                "original_text": text,
+                "translated_text": text,
+                "original_language": "Unknown",
+                "confidence": 0
+            }
+
+        try:
+            # Detect language
+            if hasattr(self.translator, 'detect'):
+                detection = self.translator.detect(text)
+                original_lang_code = detection.lang
+                confidence = getattr(detection, 'confidence', 0)
+            else:
+                # Fallback for libraries without detect method
+                original_lang_code = 'unknown'
+                confidence = 0
+
+            original_lang = self.language_names.get(original_lang_code, original_lang_code)
+
+            # Translate to English
+            if hasattr(self.translator, 'translate'):
+                translation = self.translator.translate(text, dest=target_lang)
+                translated_text = translation.text
+            else:
+                # Fallback for alternative translation libraries
+                translated_text = self.translator.translate(text)
+            
+            return {
+                "original_text": text,
+                "translated_text": translated_text,
+                "original_language": original_lang,
+                "confidence": confidence
+            }
+        except Exception as e:
+            self.logger.error(f"Translation error: {e}")
+            st.error(f"Translation failed: {e}")
+            return {
+                "original_text": text,
+                "translated_text": text,
+                "original_language": "Unknown",
+                "confidence": 0
+            }
+        
     def get_voice_input(self, language: str) -> str:
         """
         Capture voice input using speech recognition in specified language.
@@ -120,26 +238,21 @@ class MultilingualNLInterface:
 
         for chunk_type, content_list in grouped_chunks.items():
             if not content_list:
-                continue  # Skip empty sections
+                continue
 
             renderer, render_kwargs = content_type_map.get(
                 chunk_type, 
                 (st.warning, {"icon": "⚠️"})
             )
 
-            # Join content properly
-            combined_content = "\n\n".join(content_list).strip()
+            combined_content = "\n".join(content_list).strip()
 
-            # 🔹 Ensure Markdown renders correctly
-            if chunk_type == "message":
-                st.markdown(combined_content, unsafe_allow_html=False)
+            if callable(renderer):
+                renderer(combined_content)
             else:
                 renderer(combined_content, **render_kwargs)
 
-            # 🔹 Add a visual break for clarity
-            st.markdown("---")
-
-
+                
     def run(self):
         """
         Main application runner with multilingual support.
@@ -153,16 +266,16 @@ class MultilingualNLInterface:
         st.title("🚀 Multilingual Natural Language Interface")
         
         # Sidebar for configuration and metadata
-        # with st.sidebar:
-        #     st.header("🔧 System Configuration")
-        #     st.json({
-        #         "Model": interpreter.llm.model,
-        #         "API Base": interpreter.llm.api_base,
-        #         "Offline Mode": interpreter.offline
-        #     })
+        with st.sidebar:
+            st.header("🔧 System Configuration")
+            st.json({
+                "Model": interpreter.llm.model,
+                "API Base": interpreter.llm.api_base,
+                "Offline Mode": interpreter.offline
+            })
             
-        #     st.divider()
-        #     st.metric("Total Errors", st.session_state.error_count)
+            st.divider()
+            st.metric("Total Errors", st.session_state.error_count)
 
         # Language Selection
         col_lang, col_input = st.columns([1, 3])
@@ -197,8 +310,17 @@ class MultilingualNLInterface:
             if message.strip():
                 try:
                     with st.spinner("Processing your request..."):
-                        # Attempt to process in target language
-                        response_stream = interpreter.chat(message, stream=True)
+                        # Translate the input to English
+                        translation_result = self.translate_text(message)
+                        translated_message = translation_result['translated_text']
+                        original_language = translation_result['original_language']
+
+                        # Display translation information
+                        st.info(f"Original Language: {original_language}")
+                        st.info(f"Translated Message: {translated_message}")
+
+                        # Process translated message with interpreter
+                        response_stream = interpreter.chat(translated_message, stream=True)
                         
                         grouped_chunks = {
                             "code": [],
@@ -232,13 +354,19 @@ class MultilingualNLInterface:
                                 grouped_chunks[chunk_type].append(text.strip())
 
                         self.display_grouped_content(grouped_chunks)
-                        
-                        # Optional: Update chat history
+
+                        # Ensure chat history exists before appending
+                        if "chat_history" not in st.session_state:
+                            st.session_state.chat_history = []
+
                         st.session_state.chat_history.append({
                             "user": message,
+                            "translated_user": translated_message,
                             "language": selected_language,
+                            "original_language": original_language,
                             "response": grouped_chunks
                         })
+
                 
                 except Exception as e:
                     st.error(f"Error processing request: {e}")
@@ -248,7 +376,7 @@ class MultilingualNLInterface:
                 st.warning("Please enter a message before sending.")
 
 def main():
-    interface = MultilingualNLInterface()
+    interface = MultilingualTranslatorInterface()
     interface.run()
 
 if __name__ == "__main__":
