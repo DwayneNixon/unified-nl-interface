@@ -145,12 +145,12 @@ class MultilingualNLInterface:
         Main application runner with multilingual support.
         """
         st.set_page_config(
-            page_title="Multilingual NL Interface", 
+            page_title="Unified NL Interface", 
             page_icon="🌐",
             layout="wide"
         )
         
-        st.title("🚀 Multilingual Natural Language Interface")
+        st.title("🚀 Unified Natural Language Interface")
         
         # Sidebar for configuration and metadata
         # with st.sidebar:
